@@ -6,6 +6,7 @@ import {
     Dimensions,
     FlatList,
     KeyboardAvoidingView,
+    Modal,
     Platform,
     StatusBar,
     StyleSheet,
@@ -28,7 +29,7 @@ import BatteryIndicator from '../components/BatteryIndicator';
 import ChatBubble from '../components/ChatBubble';
 import FloatingParticles from '../components/FloatingParticles';
 import TypingIndicator from '../components/TypingIndicator';
-import { getAIResponse } from '../utils/chatLogic';
+import { getAIResponse, resetChatState } from '../utils/chatLogic';
 
 const { width, height } = Dimensions.get('window');
 
@@ -104,6 +105,59 @@ function HeartParticle({ x, delay }) {
     );
 }
 
+// ─── Sad Teardrop Particle ──────────────────────────────────
+function SadParticle({ x, delay }) {
+    const translateY = useSharedValue(0);
+    const opacity = useSharedValue(0);
+
+    useEffect(() => {
+        opacity.value = withDelay(delay, withSequence(
+            withTiming(0.7, { duration: 400 }),
+            withTiming(0.5, { duration: 1800 }),
+            withTiming(0, { duration: 600 }),
+        ));
+        translateY.value = withDelay(delay, withTiming(height * 0.55, { duration: 2600, easing: Easing.in(Easing.quad) }));
+    }, []);
+
+    const style = useAnimatedStyle(() => ({
+        transform: [{ translateY: translateY.value }],
+        opacity: opacity.value,
+    }));
+
+    return (
+        <Animated.Text style={[styles.sadDrop, { left: x }, style]}>
+            💧
+        </Animated.Text>
+    );
+}
+
+// ─── Sad Overlay ────────────────────────────────────────
+function SadOverlay({ particles }) {
+    const opacity = useSharedValue(0);
+
+    useEffect(() => {
+        opacity.value = withSequence(
+            withTiming(1, { duration: 800, easing: Easing.out(Easing.quad) }),
+            withTiming(1, { duration: 2800 }),
+            withTiming(0, { duration: 1200, easing: Easing.in(Easing.quad) }),
+        );
+    }, []);
+
+    const overlayStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
+
+    return (
+        <Animated.View style={[StyleSheet.absoluteFill, styles.sadOverlay, overlayStyle]} pointerEvents="none">
+            <LinearGradient
+                colors={['rgba(0,5,30,0.55)', 'rgba(0,0,10,0.35)', 'rgba(5,0,25,0.55)']}
+                style={StyleSheet.absoluteFill}
+            />
+            {particles.map(p => (
+                <SadParticle key={p.id} x={p.x} delay={p.delay} />
+            ))}
+        </Animated.View>
+    );
+}
+
 // ─── Cinematic End Screen ───────────────────────────────────────
 function CinematicEnd() {
     const opacity = useSharedValue(0);
@@ -140,23 +194,32 @@ function CinematicEnd() {
 const INITIAL_MESSAGES = [
     {
         id: '0',
-        text: 'Vanakkam da! I am DELULU AI 🔮\nAsk me anything about your future, love, or destiny...',
+        text: 'Naan dhaan unga future-a predict panna pora Smart Josiyar! 🔮 Enna vena kelu, unmai varum...',
         isUser: false,
         isLoveInsight: false,
     },
 ];
 
+function makeInitialMessages() {
+    resetChatState();
+    return [...INITIAL_MESSAGES];
+}
+
 // ─── MAIN CHAT SCREEN ──────────────────────────────────────────
 export default function ChatScreen() {
-    const [messages, setMessages] = useState(INITIAL_MESSAGES);
+    const [messages, setMessages] = useState(() => makeInitialMessages());
     const [inputText, setInputText] = useState('');
     const [isTyping, setIsTyping] = useState(false);
     const [battery, setBattery] = useState(100);
     const [loveInsightActive, setLoveInsightActive] = useState(false);
     const [showCinematic, setShowCinematic] = useState(false);
+    const [showCriticalPopup, setShowCriticalPopup] = useState(false);
+    const [sadInsightActive, setSadInsightActive] = useState(false);
+    const [sadParticles, setSadParticles] = useState([]);
     const [heartParticles, setHeartParticles] = useState([]);
     const listRef = useRef(null);
     const heartTimeout = useRef(null);
+    const drainTimer = useRef(null);
     const loveOverlayOpacity = useSharedValue(0);
 
     // Love Insight overlay animation
@@ -185,7 +248,37 @@ export default function ChatScreen() {
         }, 4200);
     }, []);
 
-    useEffect(() => () => heartTimeout.current && clearTimeout(heartTimeout.current), []);
+    useEffect(() => () => {
+        heartTimeout.current && clearTimeout(heartTimeout.current);
+        drainTimer.current && clearTimeout(drainTimer.current);
+    }, []);
+
+    // Animate battery drain step by step down to 9%
+    const animateDrainTo9 = useCallback((currentBattery) => {
+        if (currentBattery <= 9) {
+            setBattery(9);
+            // Show popup after drain completes
+            setTimeout(() => setShowCriticalPopup(true), 400);
+            return;
+        }
+        const next = currentBattery - 1;
+        setBattery(next);
+        drainTimer.current = setTimeout(() => animateDrainTo9(next), 60);
+    }, []);
+
+    const triggerSadInsight = useCallback(() => {
+        const drops = Array.from({ length: 8 }, (_, i) => ({
+            id: i,
+            x: Math.random() * (width - 50) + 10,
+            delay: i * 220,
+        }));
+        setSadParticles(drops);
+        setSadInsightActive(true);
+        setTimeout(() => {
+            setSadInsightActive(false);
+            setSadParticles([]);
+        }, 5200);
+    }, []);
 
     const handleSend = useCallback(async () => {
         const text = inputText.trim();
@@ -214,14 +307,24 @@ export default function ChatScreen() {
             setMessages(prev => [...prev, aiMsg]);
             setIsTyping(false);
 
-            // Battery drain
-            setBattery(prev => {
-                const next = Math.max(0, prev - 3);
-                return next;
-            });
+            // Weighted battery drain
+            const drain = response.batteryDrain ?? 3;
+            if (drain === 999) {
+                // Animated step-down to 9%
+                setBattery(prev => {
+                    const start = prev;
+                    setTimeout(() => animateDrainTo9(start), 300);
+                    return prev; // hold until animation starts
+                });
+            } else {
+                setBattery(prev => Math.max(0, prev - drain));
+            }
 
             if (response.isLoveInsight) {
                 triggerLoveInsight();
+            }
+            if (response.isSadInsight) {
+                triggerSadInsight();
             }
 
             setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
@@ -274,9 +377,9 @@ export default function ChatScreen() {
                     <View style={styles.headerLeft}>
                         <AvatarOrb isThinking={isTyping} />
                         <View style={styles.headerInfo}>
-                            <Text style={styles.aiName}>DELULU AI</Text>
+                            <Text style={styles.aiName}>DELULU</Text>
                             <Text style={styles.aiStatus}>
-                                {isBatteryDead ? '⚠️ Power Critical' : isTyping ? '🌀 Predicting...' : '🟢 Online | Future Predicting…'}
+                                {isBatteryDead ? '⚠️ Power Critical — Visions Unreliable!' : isTyping ? '🌀 Predicting...' : '🟢 Online | Josiyar Ready…'}
                             </Text>
                         </View>
                     </View>
@@ -286,7 +389,7 @@ export default function ChatScreen() {
                 {/* ── Dead battery overlay ── */}
                 {isBatteryDead && (
                     <View style={styles.deadBanner}>
-                        <Text style={styles.deadText}>⚠️ App won't work below 10% charge. Tap "Charge" to restore.</Text>
+                        <Text style={styles.deadText}>⚠️ Cosmic energy below 10%! Visions going wrong. Tap "Charge" to restore.</Text>
                     </View>
                 )}
 
@@ -310,7 +413,7 @@ export default function ChatScreen() {
                         style={[styles.input, isBatteryDead && styles.inputDisabled]}
                         value={inputText}
                         onChangeText={setInputText}
-                        placeholder={isBatteryDead ? 'No power... 🔋' : 'Ask the cosmos...'}
+                        placeholder={isBatteryDead ? 'No cosmic power... 🔋' : 'Ask the josiyar...'}
                         placeholderTextColor={isBatteryDead ? 'rgba(255,45,45,0.4)' : 'rgba(180,120,255,0.5)'}
                         multiline
                         maxLength={200}
@@ -333,6 +436,9 @@ export default function ChatScreen() {
                     </TouchableOpacity>
                 </View>
 
+                {/* ── Sad Overlay ── */}
+                {sadInsightActive && <SadOverlay particles={sadParticles} />}
+
                 {/* ── Love Insight Overlay ── */}
                 {loveInsightActive && (
                     <Animated.View style={[StyleSheet.absoluteFill, styles.loveOverlay, loveOverlayStyle]} pointerEvents="none">
@@ -348,6 +454,39 @@ export default function ChatScreen() {
                 )}
 
                 {showCinematic && <CinematicEnd />}
+
+                {/* ── Critical Battery Popup ── */}
+                <Modal transparent animationType="fade" visible={showCriticalPopup}>
+                    <View style={styles.critOverlay}>
+                        <BlurView intensity={50} style={StyleSheet.absoluteFill} />
+                        <LinearGradient
+                            colors={['rgba(10,0,20,0.97)', 'rgba(30,0,10,0.98)', 'rgba(10,0,20,0.97)']}
+                            style={styles.critCard}
+                        >
+                            <View style={styles.critGlowBar} />
+                            <Text style={styles.critIcon}>🔋⚡</Text>
+                            <Text style={styles.critTitle}>Cosmic Energy Critical!</Text>
+                            <Text style={styles.critSubtitle}>Battery: 9%</Text>
+                            <View style={styles.critDivider} />
+                            <Text style={styles.critBody}>
+                                Dei… too many questions da! 😵{`\n`}Predictions getting wrong now.{`\n`}Tap Charge to restore the vision! 🔮
+                            </Text>
+                            <TouchableOpacity
+                                style={styles.critBtn}
+                                onPress={() => setShowCriticalPopup(false)}
+                            >
+                                <LinearGradient
+                                    colors={['#FF2D9B', '#9B27FF']}
+                                    start={{ x: 0, y: 0 }}
+                                    end={{ x: 1, y: 0 }}
+                                    style={styles.critBtnGradient}
+                                >
+                                    <Text style={styles.critBtnText}>Ok byee see you later 👋</Text>
+                                </LinearGradient>
+                            </TouchableOpacity>
+                        </LinearGradient>
+                    </View>
+                </Modal>
             </LinearGradient>
         </KeyboardAvoidingView>
     );
@@ -490,6 +629,16 @@ const styles = StyleSheet.create({
         fontSize: 20,
         fontWeight: '900',
     },
+    // Sad overlay
+    sadOverlay: {
+        zIndex: 10,
+    },
+    sadDrop: {
+        position: 'absolute',
+        top: 60,
+        fontSize: 20,
+        opacity: 0.6,
+    },
     loveOverlay: {
         alignItems: 'center',
         justifyContent: 'flex-end',
@@ -553,5 +702,90 @@ const styles = StyleSheet.create({
         textShadowColor: '#9B27FF',
         textShadowOffset: { width: 0, height: 0 },
         textShadowRadius: 16,
+    },
+    // ─── Critical Battery Popup ────────────────────────────────
+    critOverlay: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(0,0,0,0.65)',
+    },
+    critCard: {
+        width: width * 0.84,
+        borderRadius: 24,
+        paddingHorizontal: 26,
+        paddingBottom: 28,
+        borderWidth: 1.5,
+        borderColor: 'rgba(255,45,45,0.5)',
+        shadowColor: '#FF2D2D',
+        shadowOpacity: 0.7,
+        shadowRadius: 30,
+        shadowOffset: { width: 0, height: 0 },
+        overflow: 'hidden',
+        alignItems: 'center',
+    },
+    critGlowBar: {
+        height: 3,
+        width: '130%',
+        backgroundColor: '#FF2D2D',
+        marginBottom: 22,
+        shadowColor: '#FF2D2D',
+        shadowOpacity: 1,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 0 },
+    },
+    critIcon: {
+        fontSize: 44,
+        marginBottom: 8,
+    },
+    critTitle: {
+        color: '#FF6B6B',
+        fontSize: 20,
+        fontWeight: '900',
+        letterSpacing: 1,
+        textAlign: 'center',
+        textShadowColor: '#FF2D2D',
+        textShadowOffset: { width: 0, height: 0 },
+        textShadowRadius: 12,
+    },
+    critSubtitle: {
+        color: 'rgba(255,100,100,0.7)',
+        fontSize: 13,
+        letterSpacing: 1,
+        marginTop: 4,
+        marginBottom: 4,
+    },
+    critDivider: {
+        width: '100%',
+        height: 1,
+        backgroundColor: 'rgba(255,45,45,0.3)',
+        marginVertical: 14,
+    },
+    critBody: {
+        color: 'rgba(220,190,255,0.85)',
+        fontSize: 14.5,
+        lineHeight: 22,
+        textAlign: 'center',
+        letterSpacing: 0.2,
+        marginBottom: 22,
+    },
+    critBtn: {
+        width: '100%',
+        borderRadius: 16,
+        overflow: 'hidden',
+        shadowColor: '#FF2D9B',
+        shadowOpacity: 0.7,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 0 },
+    },
+    critBtnGradient: {
+        paddingVertical: 14,
+        alignItems: 'center',
+    },
+    critBtnText: {
+        color: '#FFFFFF',
+        fontSize: 15,
+        fontWeight: '900',
+        letterSpacing: 0.5,
     },
 });
